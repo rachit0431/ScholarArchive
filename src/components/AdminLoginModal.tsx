@@ -21,12 +21,6 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleFillDemoAdmin = () => {
-    setEmail('admin@college.edu');
-    setPassword('admin123');
-    setError('');
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -112,13 +106,6 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
 
           <div className="flex items-center justify-between text-xs pt-1">
             <span className="text-[#5C6F68] text-[11px]">System role: Controller of Examinations</span>
-            <button
-              type="button"
-              onClick={handleFillDemoAdmin}
-              className="text-[11px] text-[#0F5132] font-semibold hover:underline"
-            >
-              Fill Demo Credentials
-            </button>
           </div>
 
           <button

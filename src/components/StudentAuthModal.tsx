@@ -366,17 +366,6 @@ export const StudentAuthModal: React.FC<StudentAuthModalProps> = ({
                 />
                 <span>Remember Me</span>
               </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setLoginEmail('student@college.edu');
-                  setLoginPassword('password123');
-                  setError('');
-                }}
-                className="text-[11px] text-[#0F5132] font-semibold hover:underline"
-              >
-                Fill Demo Credentials
-              </button>
             </div>
 
             <button

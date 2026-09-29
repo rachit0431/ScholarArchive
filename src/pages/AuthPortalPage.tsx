@@ -446,17 +446,6 @@ export const AuthPortalPage: React.FC<AuthPortalPageProps> = ({
                       />
                       <span>Keep me signed in</span>
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setStudentEmail('student@college.edu');
-                        setStudentPassword('password123');
-                        setError('');
-                      }}
-                      className="text-[11px] text-[#0F5132] font-semibold hover:underline"
-                    >
-                      Fill Demo Credentials
-                    </button>
                   </div>
 
                   <button
@@ -670,17 +659,6 @@ export const AuthPortalPage: React.FC<AuthPortalPageProps> = ({
 
                 <div className="flex items-center justify-between text-xs pt-1">
                   <span className="text-[#5C6F68] text-[11px]">Role: Controller of Examinations</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAdminEmail('admin@college.edu');
-                      setAdminPassword('admin123');
-                      setError('');
-                    }}
-                    className="text-[11px] text-[#0F5132] font-semibold hover:underline"
-                  >
-                    Fill Demo Credentials
-                  </button>
                 </div>
 
                 <button
