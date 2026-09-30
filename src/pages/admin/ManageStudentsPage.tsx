@@ -405,8 +405,8 @@ export const ManageStudentsPage: React.FC<ManageStudentsPageProps> = ({ onStuden
                   <td colSpan={8} className="py-12 text-center text-[#5C6F68]">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <Users className="w-8 h-8 text-[#5C6F68]/50" />
-                      <p className="font-semibold text-[#1C2826]">No student records match the active criteria.</p>
-                      <p className="text-[11px]">Try adjusting your search terms or clearing applied filters.</p>
+                      <p className="font-semibold text-[#1C2826]">No users found</p>
+                      <p className="text-[11px]">No registered student records exist or match the active criteria.</p>
                       {(search || yearFilter !== 'All' || semesterFilter !== 'All' || statusFilter !== 'All' || authMethodFilter !== 'All') && (
                         <button
                           onClick={handleResetFilters}

@@ -792,66 +792,7 @@ function getInitialData(): DatabaseSchema {
     },
   ];
 
-  const defaultStudent1 = hashPassword('password123');
-  const defaultStudent2 = hashPassword('password123');
-  const defaultStudent3 = hashPassword('password123');
-
-  const students: StudentUser[] = [
-    {
-      id: 'stu-1',
-      name: 'Aarav Sharma',
-      email: 'student@college.edu',
-      passwordHash: defaultStudent1.hash,
-      salt: defaultStudent1.salt,
-      year: '3rd Year',
-      semester: 'Semester 5',
-      role: 'student',
-      createdAt: '2025-08-10T10:00:00.000Z',
-      bookmarks: ['paper-1', 'paper-2', 'paper-3'],
-      savedPapers: [
-        { paperId: 'paper-1', savedAt: '2025-08-10T10:00:00.000Z' },
-        { paperId: 'paper-2', savedAt: '2025-08-10T10:00:00.000Z' },
-        { paperId: 'paper-3', savedAt: '2025-08-10T10:00:00.000Z' },
-      ],
-      recentDownloads: [
-        { paperId: 'paper-1', downloadedAt: new Date(Date.now() - 3600000).toISOString() },
-        { paperId: 'paper-3', downloadedAt: new Date(Date.now() - 86400000).toISOString() },
-      ],
-    },
-    {
-      id: 'stu-2',
-      name: 'Priya Iyer',
-      email: 'priya.iyer@college.edu',
-      passwordHash: defaultStudent2.hash,
-      salt: defaultStudent2.salt,
-      year: '2nd Year',
-      semester: 'Semester 4',
-      role: 'student',
-      createdAt: '2025-08-12T14:30:00.000Z',
-      bookmarks: ['paper-4'],
-      savedPapers: [
-        { paperId: 'paper-4', savedAt: '2025-08-12T14:30:00.000Z' },
-      ],
-      recentDownloads: [],
-    },
-    {
-      id: 'stu-3',
-      name: 'Rohan Verma',
-      email: 'rohan.verma@college.edu',
-      passwordHash: defaultStudent3.hash,
-      salt: defaultStudent3.salt,
-      year: '4th Year',
-      semester: 'Semester 7',
-      role: 'student',
-      createdAt: '2025-08-14T09:15:00.000Z',
-      bookmarks: ['paper-6', 'paper-8'],
-      savedPapers: [
-        { paperId: 'paper-6', savedAt: '2025-08-14T09:15:00.000Z' },
-        { paperId: 'paper-8', savedAt: '2025-08-14T09:15:00.000Z' },
-      ],
-      recentDownloads: [],
-    },
-  ];
+  const students: StudentUser[] = [];
 
   const notes: Note[] = [];
 
@@ -903,25 +844,9 @@ function readDb(): DatabaseSchema {
       needsWrite = true;
     }
 
-    // Ensure default demo student exists
-    if (!data.students || !data.students.some((s: any) => s.email === 'student@college.edu')) {
-      if (!data.students) data.students = [];
-      const s1 = hashPassword('password123');
-      data.students.unshift({
-        id: 'stu-default-1',
-        name: 'Aarav Sharma',
-        email: 'student@college.edu',
-        passwordHash: s1.hash,
-        salt: s1.salt,
-        year: '3rd Year',
-        semester: 'Semester 5',
-        role: 'student',
-        createdAt: '2025-08-10T10:00:00.000Z',
-        bookmarks: [],
-        recentDownloads: [],
-        status: 'active',
-        authMethod: 'email',
-      });
+    // Ensure students array exists
+    if (!data.students || !Array.isArray(data.students)) {
+      data.students = [];
       needsWrite = true;
     }
 
@@ -987,20 +912,31 @@ function readDb(): DatabaseSchema {
     }
 
     if (needsWrite) {
-      fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
+      writeDb(data);
     }
 
     return data;
   } catch (err) {
-    console.error('Error reading DB, re-initializing:', err);
+    console.error('Error reading DB, protecting existing file:', err);
+    if (fs.existsSync(DB_FILE)) {
+      try {
+        const backupFile = `${DB_FILE}.corrupt.${Date.now()}`;
+        fs.copyFileSync(DB_FILE, backupFile);
+        console.warn(`[DATABASE] Backup of unreadable DB saved to ${backupFile}`);
+      } catch (backupErr) {
+        console.error('Failed to create DB backup:', backupErr);
+      }
+    }
     const initial = getInitialData();
-    fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2), 'utf-8');
+    writeDb(initial);
     return initial;
   }
 }
 
 function writeDb(data: DatabaseSchema) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  const tempFile = `${DB_FILE}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), 'utf-8');
+  fs.renameSync(tempFile, DB_FILE);
 }
 
 // Initialize database on startup and ensure PDF repository integrity & valid multi-page PDF files
@@ -3122,6 +3058,7 @@ app.post('/api/student/downloads/record', requireAuth, (req, res) => {
       if (!Array.isArray(student.savedNotes)) student.savedNotes = [];
       if (!Array.isArray(student.bookmarks)) student.bookmarks = [];
 
+      let alreadyArchived = false;
       if (isNote) {
         // Record in recent downloads
         student.recentDownloads.unshift({
@@ -3134,6 +3071,7 @@ app.post('/api/student/downloads/record', requireAuth, (req, res) => {
 
         // Also automatically save to student's archive record without duplicates
         const alreadySavedNote = student.savedNotes.some(n => n.noteId === targetId);
+        alreadyArchived = alreadySavedNote;
         if (!alreadySavedNote) {
           student.savedNotes.unshift({
             noteId: targetId,
@@ -3151,6 +3089,7 @@ app.post('/api/student/downloads/record', requireAuth, (req, res) => {
 
         // Save to student's archive record without duplicates
         const alreadySaved = student.savedPapers.some(p => p.paperId === targetId);
+        alreadyArchived = alreadySaved;
         if (!alreadySaved) {
           student.savedPapers.unshift({
             paperId: targetId,
@@ -3165,6 +3104,7 @@ app.post('/api/student/downloads/record', requireAuth, (req, res) => {
       writeDb(db);
       return res.json({
         success: true,
+        alreadyArchived,
         savedPapers: student.savedPapers,
         savedNotes: student.savedNotes,
         bookmarks: student.bookmarks,
