@@ -6,22 +6,21 @@ import { fileURLToPath } from 'url';
 import multer from 'multer';
 import crypto from 'crypto';
 import nodemailer, { type Transporter } from 'nodemailer';
-import { createServer as createViteServer } from 'vite';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-// Middleware for JSON and form data (configured for high-throughput and up to 100MB body payloads)
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+// Optimized middleware for JSON and form data (safe 10MB limit prevents V8 heap overflow)
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Global error handler for oversized payloads
 app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (err && (err.type === 'entity.too.large' || err.status === 413 || err.statusCode === 413)) {
-    return res.status(413).json({ error: 'Request payload is too large. Maximum supported file size is 60 MB.' });
+    return res.status(413).json({ error: 'Request payload is too large. Maximum supported request size is 10 MB.' });
   }
   next(err);
 });
@@ -808,13 +807,34 @@ function getInitialData(): DatabaseSchema {
   };
 }
 
+let memoryDbCache: DatabaseSchema | null = null;
+let lastDbMtime = 0;
+
 function readDb(): DatabaseSchema {
   try {
     if (!fs.existsSync(DB_FILE)) {
       const initial = getInitialData();
       fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2), 'utf-8');
+      memoryDbCache = initial;
+      try {
+        lastDbMtime = fs.statSync(DB_FILE).mtimeMs;
+      } catch {
+        lastDbMtime = Date.now();
+      }
       return initial;
     }
+
+    // Fast-path: return cached memory instance if file hasn't changed on disk
+    try {
+      const stat = fs.statSync(DB_FILE);
+      if (memoryDbCache && stat.mtimeMs === lastDbMtime) {
+        return memoryDbCache;
+      }
+      lastDbMtime = stat.mtimeMs;
+    } catch {
+      // Continue to read if stat fails
+    }
+
     const raw = fs.readFileSync(DB_FILE, 'utf-8');
     const data: DatabaseSchema = JSON.parse(raw);
 
@@ -860,6 +880,21 @@ function readDb(): DatabaseSchema {
     if (!data.contactMessages) {
       data.contactMessages = [];
       needsWrite = true;
+    }
+
+    // Prune expired sessions to prevent memory and database file bloat
+    if (data.sessions) {
+      const now = Date.now();
+      let expiredCount = 0;
+      for (const token of Object.keys(data.sessions)) {
+        if (data.sessions[token].expiresAt <= now) {
+          delete data.sessions[token];
+          expiredCount++;
+        }
+      }
+      if (expiredCount > 0) {
+        needsWrite = true;
+      }
     }
 
     // Migrate any student without passwordHash, status, or authMethod, and ensure savedPapers/bookmarks/recentDownloads exist
@@ -911,6 +946,8 @@ function readDb(): DatabaseSchema {
       });
     }
 
+    memoryDbCache = data;
+
     if (needsWrite) {
       writeDb(data);
     }
@@ -918,6 +955,9 @@ function readDb(): DatabaseSchema {
     return data;
   } catch (err) {
     console.error('Error reading DB, protecting existing file:', err);
+    if (memoryDbCache) {
+      return memoryDbCache;
+    }
     if (fs.existsSync(DB_FILE)) {
       try {
         const backupFile = `${DB_FILE}.corrupt.${Date.now()}`;
@@ -934,10 +974,39 @@ function readDb(): DatabaseSchema {
 }
 
 function writeDb(data: DatabaseSchema) {
+  memoryDbCache = data;
   const tempFile = `${DB_FILE}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
   fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), 'utf-8');
   fs.renameSync(tempFile, DB_FILE);
+  try {
+    lastDbMtime = fs.statSync(DB_FILE).mtimeMs;
+  } catch {
+    lastDbMtime = Date.now();
+  }
 }
+
+// Clean up stale temporary chunk uploads older than 1 hour to prevent disk and inode exhaustion
+function cleanStaleTempUploads() {
+  try {
+    if (!fs.existsSync(TEMP_UPLOADS_DIR)) return;
+    const files = fs.readdirSync(TEMP_UPLOADS_DIR);
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    for (const f of files) {
+      const p = path.join(TEMP_UPLOADS_DIR, f);
+      try {
+        const stat = fs.statSync(p);
+        if (stat.mtimeMs < oneHourAgo) {
+          fs.unlinkSync(p);
+        }
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+cleanStaleTempUploads();
 
 // Initialize database on startup and ensure PDF repository integrity & valid multi-page PDF files
 const startupDb = readDb();
@@ -1241,12 +1310,6 @@ function handleGetSinglePaper(req: express.Request, res: express.Response) {
 app.post(
   '/api/papers',
   requireAuth,
-  (req, res, next) => {
-    // Generous 10-minute timeout for large PDF uploads and processing
-    req.setTimeout(600000);
-    res.setTimeout(600000);
-    next();
-  },
   handleMulterUpload,
   (req, res) => {
     try {
@@ -1361,11 +1424,6 @@ app.post(
 app.post(
   '/api/papers/upload-chunk',
   requireAuth,
-  (req, res, next) => {
-    req.setTimeout(600000);
-    res.setTimeout(600000);
-    next();
-  },
   chunkUpload.single('chunk'),
   async (req, res) => {
     try {
@@ -1624,13 +1682,17 @@ function streamPaperPdf(req: express.Request, res: express.Response, asAttachmen
     return res.status(404).json({ error: 'Question paper record not found in repository.' });
   }
 
-  // Increment respective counter
-  if (asAttachment) {
-    paper.downloadsCount = (paper.downloadsCount || 0) + 1;
-  } else {
-    paper.viewsCount = (paper.viewsCount || 0) + 1;
+  // Only increment counters on initial view or download request, not on HEAD or Range chunks
+  const isHead = req.method === 'HEAD';
+  const isSubsequentChunk = Boolean(req.headers.range && !req.headers.range.startsWith('bytes=0-'));
+  if (!isHead && !isSubsequentChunk) {
+    if (asAttachment) {
+      paper.downloadsCount = (paper.downloadsCount || 0) + 1;
+    } else {
+      paper.viewsCount = (paper.viewsCount || 0) + 1;
+    }
+    writeDb(db);
   }
-  writeDb(db);
 
   const safeFilename = path.basename(paper.filename);
   const filePath = path.resolve(UPLOADS_DIR, safeFilename);
@@ -1863,11 +1925,6 @@ app.get('/api/notes/:id', (req, res) => {
 app.post(
   '/api/notes',
   requireAdmin,
-  (req, res, next) => {
-    req.setTimeout(600000);
-    res.setTimeout(600000);
-    next();
-  },
   handleMulterUpload,
   (req, res) => {
     try {
@@ -1953,11 +2010,6 @@ app.post(
 app.post(
   '/api/notes/upload-chunk',
   requireAdmin,
-  (req, res, next) => {
-    req.setTimeout(600000);
-    res.setTimeout(600000);
-    next();
-  },
   chunkUpload.single('chunk'),
   async (req, res) => {
     try {
@@ -2055,13 +2107,17 @@ function streamNotePdf(req: express.Request, res: express.Response, asAttachment
     return res.status(404).json({ error: 'Note record not found in repository.' });
   }
 
-  // Increment respective counter
-  if (asAttachment) {
-    note.downloadsCount = (note.downloadsCount || 0) + 1;
-  } else {
-    note.viewsCount = (note.viewsCount || 0) + 1;
+  // Only increment counters on initial view or download request, not on HEAD or Range chunks
+  const isHead = req.method === 'HEAD';
+  const isSubsequentChunk = Boolean(req.headers.range && !req.headers.range.startsWith('bytes=0-'));
+  if (!isHead && !isSubsequentChunk) {
+    if (asAttachment) {
+      note.downloadsCount = (note.downloadsCount || 0) + 1;
+    } else {
+      note.viewsCount = (note.viewsCount || 0) + 1;
+    }
+    writeDb(db);
   }
-  writeDb(db);
 
   const safeFilename = path.basename(note.filename);
   const filePath = path.resolve(UPLOADS_DIR, safeFilename);
@@ -3592,12 +3648,26 @@ app.get('/api/contact/messages', requireAdmin, (_req, res) => {
    ========================================================================== */
 
 async function startServer() {
-  if (process.env.NODE_ENV === 'production' && fs.existsSync(path.join(__dirname, 'dist'))) {
-    app.use(express.static(path.join(__dirname, 'dist')));
+  const distDir = fs.existsSync(path.join(__dirname, 'dist', 'index.html'))
+    ? path.join(__dirname, 'dist')
+    : fs.existsSync(path.join(process.cwd(), 'dist', 'index.html'))
+    ? path.join(process.cwd(), 'dist')
+    : null;
+
+  const isProduction = process.env.NODE_ENV === 'production' || Boolean(process.env.RENDER) || distDir !== null;
+
+  if (distDir && (isProduction || process.env.NODE_ENV !== 'development')) {
+    console.log(`[PRODUCTION] Serving pre-built static client from ${distDir}`);
+    app.use(express.static(distDir, {
+      maxAge: '1d',
+      etag: true,
+    }));
     app.get('*', (_req, res) => {
-      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.join(distDir, 'index.html'));
     });
   } else {
+    console.log('[DEVELOPMENT] Initializing Vite middleware mode...');
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -3609,10 +3679,9 @@ async function startServer() {
     console.log(`Academic Archive Server listening on http://0.0.0.0:${PORT}`);
   });
 
-  // Optimize server timeouts for large PDF processing and asynchronous uploads
-  server.timeout = 600000; // 10 minutes
-  server.keepAliveTimeout = 610000;
-  server.headersTimeout = 620000;
+  // Standard keep-alive timeouts for reverse proxies (Render / Cloudflare / Nginx)
+  server.keepAliveTimeout = 65000;
+  server.headersTimeout = 66000;
 }
 
 startServer().catch(err => {

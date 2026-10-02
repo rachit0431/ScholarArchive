@@ -85,14 +85,28 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
   const handleDownload = async () => {
     setIsDownloading(true);
     try {
-      await api.downloadPaperBlob(
-        paper.id,
-        paper.originalFilename || `${paper.subjectCode}-${paper.examType}.pdf`
-      );
-      setDownloadSuccess(true);
+      if (blobUrl) {
+        // Re-use the document already loaded in memory to avoid requesting 36MB from the server again
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = paper.originalFilename || `${paper.subjectCode}_${paper.examType}.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        if (onDownloadRecorded) {
+          onDownloadRecorded(paper.id);
+        }
+        setDownloadSuccess(true);
+        setTimeout(() => setDownloadSuccess(false), 3000);
+        return;
+      }
+
+      await api.downloadPaperBlob(paper.id, paper.originalFilename || `${paper.subjectCode}_${paper.examType}.pdf`);
       if (onDownloadRecorded) {
         onDownloadRecorded(paper.id);
       }
+      setDownloadSuccess(true);
       setTimeout(() => setDownloadSuccess(false), 3000);
     } catch (err: any) {
       console.error('Download error in viewer:', err);

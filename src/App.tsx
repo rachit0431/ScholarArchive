@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { HomePage } from './pages/HomePage';
@@ -194,12 +194,15 @@ export default function App() {
     verifyInitialSession();
   }, [fetchData]);
 
+  const hasFetchedNotes = useRef(false);
+
   // Load notes for public or authenticated viewers
   useEffect(() => {
-    if (notes.length === 0) {
+    if (!hasFetchedNotes.current && notes.length === 0) {
+      hasFetchedNotes.current = true;
       api.getNotes()
         .then(data => {
-          if (Array.isArray(data) && data.length > 0) {
+          if (Array.isArray(data)) {
             setNotes(data);
           }
         })
@@ -354,10 +357,9 @@ export default function App() {
   };
 
   // Download recorded handler
-  // Saves persistent reference into student's archive record without duplicates
+  // Updates download counts and registers in recent downloads if signed in
   const handleDownloadRecorded = async (id: string, type: 'paper' | 'note' = 'paper') => {
     try {
-      const result = await api.recordDownload(id, type);
       if (type === 'paper') {
         setPapers(prev =>
           prev.map(p => (p.id === id ? { ...p, downloadsCount: p.downloadsCount + 1 } : p))
@@ -367,6 +369,9 @@ export default function App() {
           prev.map(n => (n.id === id ? { ...n, downloadsCount: n.downloadsCount + 1 } : n))
         );
       }
+
+      const result = await api.recordDownload(id, type);
+
       if (currentStudent) {
         const newRecord = {
           paperId: id,
@@ -376,33 +381,13 @@ export default function App() {
         };
         setCurrentStudent(prev => {
           if (!prev) return null;
-          const updatedSaved = result?.savedPapers || (
-            type === 'paper'
-              ? (prev.savedPapers?.some(p => p.paperId === id)
-                ? prev.savedPapers
-                : [{ paperId: id, savedAt: new Date().toISOString() }, ...(prev.savedPapers || [])])
-              : prev.savedPapers
-          );
-          const updatedSavedNotes = result?.savedNotes || (
-            type === 'note'
-              ? (prev.savedNotes?.some(n => n.noteId === id)
-                ? prev.savedNotes
-                : [{ noteId: id, savedAt: new Date().toISOString() }, ...(prev.savedNotes || [])])
-              : prev.savedNotes
-          );
-          const updatedBookmarks = result?.bookmarks || (
-            type === 'paper' && !prev.bookmarks.includes(id) ? [...prev.bookmarks, id] : prev.bookmarks
-          );
           return {
             ...prev,
-            savedPapers: updatedSaved,
-            savedNotes: updatedSavedNotes,
-            bookmarks: updatedBookmarks,
             recentDownloads: [newRecord, ...(prev.recentDownloads || [])].slice(0, 50),
           };
         });
-        showToast(type === 'note' ? 'Study notes saved to My Archive' : 'Paper saved to My Archive');
       }
+      showToast(type === 'note' ? 'Study note downloaded' : 'Question paper downloaded');
     } catch (err) {
       console.error(err);
     }

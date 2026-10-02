@@ -172,6 +172,7 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
     let isCancelled = false;
     let loadingTask: any = null;
     let localBlobUrl: string | null = null;
+    let currentDoc: pdfjsLib.PDFDocumentProxy | null = null;
 
     async function loadPdf() {
       setIsLoading(true);
@@ -235,8 +236,12 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
         };
 
         const doc = await loadingTask.promise;
-        if (isCancelled) return;
+        if (isCancelled) {
+          try { doc.destroy(); } catch {}
+          return;
+        }
 
+        currentDoc = doc;
         setPdfDoc(doc);
         setNumPages(doc.numPages);
         setCurrentPage(1);
@@ -259,6 +264,13 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
 
     return () => {
       isCancelled = true;
+      if (currentDoc) {
+        try {
+          currentDoc.destroy();
+        } catch {
+          // ignore
+        }
+      }
       if (loadingTask) {
         try {
           loadingTask.destroy();

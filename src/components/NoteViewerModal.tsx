@@ -78,10 +78,26 @@ export const NoteViewerModal: React.FC<NoteViewerModalProps> = ({ note, onClose,
   const handleDownload = async () => {
     setIsDownloading(true);
     try {
-      await api.downloadNoteBlob(
-        note.id,
-        note.originalFilename || `${note.subjectCode}-Notes.pdf`
-      );
+      if (blobUrl) {
+        // Re-use the document already loaded in memory to avoid requesting 36MB from the server again
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = note.originalFilename || `${note.subjectCode}-Notes.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        if (onDownloadRecorded) {
+          onDownloadRecorded(note.id, 'note');
+        } else {
+          api.recordDownload(note.id, 'note').catch(() => {});
+        }
+        setDownloadSuccess(true);
+        setTimeout(() => setDownloadSuccess(false), 3000);
+        return;
+      }
+
+      await api.downloadNoteBlob(note.id, note.originalFilename || `${note.subjectCode}-Notes.pdf`);
       if (onDownloadRecorded) {
         onDownloadRecorded(note.id, 'note');
       } else {
