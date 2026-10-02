@@ -6,6 +6,23 @@ import { fileURLToPath } from 'url';
 import multer from 'multer';
 import crypto from 'crypto';
 import nodemailer, { type Transporter } from 'nodemailer';
+import {
+  isSupabaseConfigured,
+  getSupabase,
+  uploadPdfToStorage,
+  downloadPdfFromStorage,
+  deletePdfFromStorage,
+  syncDatabaseFromSupabase,
+  persistStudentToSupabase,
+  persistPaperToSupabase,
+  persistNoteToSupabase,
+  persistSessionToSupabase,
+  removeSessionFromSupabase,
+  persistSavedPaperToggle,
+  persistSavedNoteToggle,
+  persistRecentDownload,
+  persistContactMessage,
+} from './server/supabase.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1126,6 +1143,24 @@ declare global {
   }
 }
 
+// If Supabase is configured, trigger initial database sync on startup
+if (isSupabaseConfigured()) {
+  syncDatabaseFromSupabase().then(cloudData => {
+    if (cloudData) {
+      const current = readDb();
+      if (cloudData.students && cloudData.students.length > 0) current.students = cloudData.students;
+      if (cloudData.papers && cloudData.papers.length > 0) current.papers = cloudData.papers;
+      if (cloudData.notes && cloudData.notes.length > 0) current.notes = cloudData.notes;
+      if (cloudData.subjects && cloudData.subjects.length > 0) current.subjects = cloudData.subjects;
+      if (cloudData.sessions) current.sessions = { ...current.sessions, ...cloudData.sessions };
+      writeDb(current);
+      console.log('[SUPABASE] Cloud database synced with application memory cache.');
+    }
+  }).catch(err => {
+    console.warn('[SUPABASE] Initial cloud sync notice:', err?.message || err);
+  });
+}
+
 // Explicitly block direct public access to uploads folder - all files must go through authenticated endpoints
 app.all(['/uploads', '/uploads/*'], (_req, res) => {
   res.status(401).json({ error: 'Direct access to files is forbidden. Institutional authentication required.' });
@@ -1412,6 +1447,18 @@ app.post(
       }
 
       writeDb(db);
+
+      // Persist metadata and file to Supabase if configured
+      if (isSupabaseConfigured() && req.file) {
+        fs.readFile(req.file.path, (_readErr, buf) => {
+          if (buf) {
+            uploadPdfToStorage(`papers/${newPaper.filename}`, buf)
+              .then(() => persistPaperToSupabase(newPaper))
+              .catch(e => console.error('[SUPABASE] Paper upload error:', e));
+          }
+        });
+      }
+
       res.status(201).json(newPaper);
     } catch (err: any) {
       console.error('Error adding paper:', err);
@@ -1529,6 +1576,19 @@ app.post(
       }
 
       writeDb(db);
+
+      // Persist finalized chunked assembly to Supabase
+      if (isSupabaseConfigured()) {
+        const assembledFilePath = path.join(UPLOADS_DIR, newPaper.filename);
+        fs.readFile(assembledFilePath, (_readErr, buf) => {
+          if (buf) {
+            uploadPdfToStorage(`papers/${newPaper.filename}`, buf)
+              .then(() => persistPaperToSupabase(newPaper))
+              .catch(e => console.error('[SUPABASE] Chunked paper upload error:', e));
+          }
+        });
+      }
+
       return res.status(201).json(newPaper);
     } catch (err: any) {
       console.error('Error completing chunked paper upload:', err);
@@ -1620,6 +1680,21 @@ app.put('/api/papers/:id', requireAdmin, handleMulterUpload, (req, res) => {
 
     db.papers[paperIdx] = updatedPaper;
     writeDb(db);
+
+    if (isSupabaseConfigured()) {
+      if (req.file) {
+        fs.readFile(req.file.path, (_readErr, buf) => {
+          if (buf) {
+            uploadPdfToStorage(`papers/${updatedPaper.filename}`, buf)
+              .then(() => persistPaperToSupabase(updatedPaper))
+              .catch(e => console.error('[SUPABASE] Paper update error:', e));
+          }
+        });
+      } else {
+        persistPaperToSupabase(updatedPaper).catch(e => console.error('[SUPABASE] Paper update error:', e));
+      }
+    }
+
     res.json(updatedPaper);
   } catch (err: any) {
     console.error('Error updating paper:', err);
@@ -1656,6 +1731,12 @@ app.delete('/api/papers/:id', requireAdmin, (req, res) => {
   // Bookmarks are also retained or cleaned only if desired, but retaining allows clean UI resolution.
 
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    deletePdfFromStorage(`papers/${paper.filename}`).catch(() => {});
+    getSupabase()?.from('papers').delete().eq('id', paperId).then(() => {}, () => {});
+  }
+
   return res.json({
     success: true,
     message: `Question paper "${paper.subjectName}" (${paper.subjectCode}) permanently deleted from archive and storage.`,
@@ -1674,7 +1755,7 @@ function getSafePdfFilenames(originalFilename?: string, fallbackName?: string) {
 }
 
 // Helper to stream paper PDF for browser inline viewing or attachment download
-function streamPaperPdf(req: express.Request, res: express.Response, asAttachment: boolean = false) {
+async function streamPaperPdf(req: express.Request, res: express.Response, asAttachment: boolean = false) {
   const paperId = req.params.id;
   const db = readDb();
   const paper = db.papers.find(p => p.id === paperId);
@@ -1714,6 +1795,23 @@ function streamPaperPdf(req: express.Request, res: express.Response, asAttachmen
       } catch {
         needsHeal = true;
       }
+    }
+  }
+
+  // First attempt to restore from Supabase Storage before falling back to synthesize
+  if (needsHeal && isSupabaseConfigured()) {
+    try {
+      const cloud = await downloadPdfFromStorage(`papers/${paper.filename}`);
+      if (cloud.buffer && cloud.buffer.length > 0) {
+        fs.writeFileSync(filePath, cloud.buffer);
+        paper.fileSize = cloud.buffer.length;
+        paper.fileSizeFormatted = formatBytes(cloud.buffer.length);
+        writeDb(db);
+        needsHeal = false;
+        console.log(`[SUPABASE STORAGE] Restored paper ${paper.id} (${paper.filename}) from cloud bucket -> ${cloud.buffer.length} bytes`);
+      }
+    } catch (e) {
+      console.warn(`[SUPABASE STORAGE] Could not restore paper ${paper.id} from cloud:`, e);
     }
   }
 
@@ -1998,6 +2096,17 @@ app.post(
 
       db.notes.unshift(newNote);
       writeDb(db);
+
+      if (isSupabaseConfigured() && req.file) {
+        fs.readFile(req.file.path, (_readErr, buf) => {
+          if (buf) {
+            uploadPdfToStorage(`notes/${newNote.filename}`, buf)
+              .then(() => persistNoteToSupabase(newNote))
+              .catch(e => console.error('[SUPABASE] Note direct upload error:', e));
+          }
+        });
+      }
+
       res.status(201).json(newNote);
     } catch (err: any) {
       console.error('Error creating note:', err);
@@ -2089,6 +2198,17 @@ app.post(
       db.notes.unshift(newNote);
       writeDb(db);
 
+      if (isSupabaseConfigured()) {
+        const assembledFilePath = path.join(UPLOADS_DIR, newNote.filename);
+        fs.readFile(assembledFilePath, (_readErr, buf) => {
+          if (buf) {
+            uploadPdfToStorage(`notes/${newNote.filename}`, buf)
+              .then(() => persistNoteToSupabase(newNote))
+              .catch(e => console.error('[SUPABASE] Note chunked commit upload error:', e));
+          }
+        });
+      }
+
       return res.status(201).json(newNote);
     } catch (err: any) {
       console.error('Error completing chunked note upload:', err);
@@ -2099,7 +2219,7 @@ app.post(
 );
 
 // Helper to stream note PDF for browser inline viewing or attachment download
-function streamNotePdf(req: express.Request, res: express.Response, asAttachment: boolean = false) {
+async function streamNotePdf(req: express.Request, res: express.Response, asAttachment: boolean = false) {
   const noteId = req.params.id;
   const db = readDb();
   const note = (db.notes || []).find(n => n.id === noteId);
@@ -2139,6 +2259,23 @@ function streamNotePdf(req: express.Request, res: express.Response, asAttachment
       } catch {
         needsHeal = true;
       }
+    }
+  }
+
+  // First attempt to restore from Supabase Storage before falling back to synthesize
+  if (needsHeal && isSupabaseConfigured()) {
+    try {
+      const cloud = await downloadPdfFromStorage(`notes/${note.filename}`);
+      if (cloud.buffer && cloud.buffer.length > 0) {
+        fs.writeFileSync(filePath, cloud.buffer);
+        note.fileSize = cloud.buffer.length;
+        note.fileSizeFormatted = formatBytes(cloud.buffer.length);
+        writeDb(db);
+        needsHeal = false;
+        console.log(`[SUPABASE STORAGE] Restored note ${note.id} (${note.filename}) from cloud bucket -> ${cloud.buffer.length} bytes`);
+      }
+    } catch (e) {
+      console.warn(`[SUPABASE STORAGE] Could not restore note ${note.id} from cloud:`, e);
     }
   }
 
@@ -2320,6 +2457,11 @@ app.delete('/api/notes/:id', requireAdmin, (req, res) => {
   db.notes.splice(noteIndex, 1);
   writeDb(db);
 
+  if (isSupabaseConfigured()) {
+    deletePdfFromStorage(`notes/${note.filename}`).catch(() => {});
+    getSupabase()?.from('notes').delete().eq('id', noteId).then(() => {}, () => {});
+  }
+
   return res.json({
     success: true,
     message: `Note "${note.title}" (${note.subjectCode}) permanently deleted from repository and storage.`,
@@ -2352,6 +2494,16 @@ app.post('/api/subjects', requireAdmin, (req, res) => {
 
   db.subjects.push(newSubject);
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    getSupabase()?.from('subjects').upsert({
+      id: newSubject.id,
+      name: newSubject.name,
+      code: newSubject.code,
+      paper_count: 0
+    }).then(() => {}, () => {});
+  }
+
   res.status(201).json(newSubject);
 });
 
@@ -2359,6 +2511,11 @@ app.delete('/api/subjects/:id', requireAdmin, (req, res) => {
   const db = readDb();
   db.subjects = db.subjects.filter(s => s.id !== req.params.id);
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    getSupabase()?.from('subjects').delete().eq('id', req.params.id).then(() => {}, () => {});
+  }
+
   res.json({ success: true });
 });
 
@@ -2379,6 +2536,10 @@ app.post('/api/years', requireAdmin, (req, res) => {
     db.years.unshift(cleanYear);
     db.years.sort((a, b) => b.localeCompare(a));
     writeDb(db);
+
+    if (isSupabaseConfigured()) {
+      getSupabase()?.from('system_settings').upsert({ key: 'years', value: db.years }).then(() => {}, () => {});
+    }
   }
   res.status(201).json(db.years);
 });
@@ -2387,6 +2548,11 @@ app.delete('/api/years/:year', requireAdmin, (req, res) => {
   const db = readDb();
   db.years = db.years.filter(y => y !== req.params.year);
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    getSupabase()?.from('system_settings').upsert({ key: 'years', value: db.years }).then(() => {}, () => {});
+  }
+
   res.json({ success: true, years: db.years });
 });
 
@@ -2406,6 +2572,10 @@ app.post('/api/exam-types', requireAdmin, (req, res) => {
   if (!db.examTypes.includes(clean)) {
     db.examTypes.push(clean);
     writeDb(db);
+
+    if (isSupabaseConfigured()) {
+      getSupabase()?.from('system_settings').upsert({ key: 'examTypes', value: db.examTypes }).then(() => {}, () => {});
+    }
   }
   res.status(201).json(db.examTypes);
 });
@@ -2414,6 +2584,11 @@ app.delete('/api/exam-types/:type', requireAdmin, (req, res) => {
   const db = readDb();
   db.examTypes = db.examTypes.filter(t => t.toLowerCase() !== req.params.type.toLowerCase());
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    getSupabase()?.from('system_settings').upsert({ key: 'examTypes', value: db.examTypes }).then(() => {}, () => {});
+  }
+
   res.json({ success: true, examTypes: db.examTypes });
 });
 
@@ -2526,6 +2701,11 @@ app.post('/api/auth/student-signup', (req, res) => {
   db.sessions[token] = session;
   writeDb(db);
 
+  if (isSupabaseConfigured()) {
+    persistStudentToSupabase(newStudent).catch(e => console.error('[SUPABASE] Failed to persist student:', e));
+    persistSessionToSupabase(session).catch(e => console.error('[SUPABASE] Failed to persist session:', e));
+  }
+
   const { passwordHash: _, salt: __, ...safeUser } = newStudent;
   res.status(201).json({
     success: true,
@@ -2581,6 +2761,10 @@ app.post('/api/auth/student-login', (req, res) => {
   db.sessions[token] = session;
   writeDb(db);
 
+  if (isSupabaseConfigured()) {
+    persistSessionToSupabase(session).catch(e => console.error('[SUPABASE] Failed to persist session:', e));
+  }
+
   const { passwordHash: _, salt: __, resetToken: ___, resetTokenExpires: ____, ...safeUser } = student;
   res.json({
     success: true,
@@ -2626,6 +2810,10 @@ app.post('/api/auth/admin-login', (req, res) => {
   db.sessions[token] = session;
   writeDb(db);
 
+  if (isSupabaseConfigured()) {
+    persistSessionToSupabase(session).catch(e => console.error('[SUPABASE] Failed to persist session:', e));
+  }
+
   res.json({
     success: true,
     token,
@@ -2649,6 +2837,9 @@ app.post('/api/auth/logout', (req, res) => {
     if (db.sessions && db.sessions[token]) {
       delete db.sessions[token];
       writeDb(db);
+    }
+    if (isSupabaseConfigured()) {
+      removeSessionFromSupabase(token).catch(e => console.error('[SUPABASE] Failed to remove session:', e));
     }
   }
 
@@ -2824,6 +3015,10 @@ app.post('/api/auth/google', async (req, res) => {
         status: 'active',
       };
       db.students.push(student);
+
+      if (isSupabaseConfigured()) {
+        persistStudentToSupabase(student).catch(e => console.error('[SUPABASE] Failed to persist google student:', e));
+      }
     }
 
     // Issue real session
@@ -2841,6 +3036,10 @@ app.post('/api/auth/google', async (req, res) => {
 
     db.sessions[token] = session;
     writeDb(db);
+
+    if (isSupabaseConfigured()) {
+      persistSessionToSupabase(session).catch(e => console.error('[SUPABASE] Failed to persist session:', e));
+    }
 
     const { passwordHash: _, salt: __, resetToken: ___, resetTokenExpires: ____, ...safeUser } = student;
     res.json({
@@ -2983,6 +3182,11 @@ app.post('/api/student/archive/save', requireAuth, (req, res) => {
   }
 
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    persistSavedPaperToggle(student.id, paperId, true).catch(e => console.error('[SUPABASE] Save paper toggle error:', e));
+  }
+
   res.json({
     success: true,
     isSaved: true,
@@ -3013,6 +3217,11 @@ app.post('/api/student/archive/remove', requireAuth, (req, res) => {
   }
 
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    persistSavedPaperToggle(student.id, paperId, false).catch(e => console.error('[SUPABASE] Remove paper toggle error:', e));
+  }
+
   res.json({
     success: true,
     isSaved: false,
@@ -3053,6 +3262,11 @@ app.post('/api/student/archive/toggle', requireAuth, (req, res) => {
   }
 
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    persistSavedPaperToggle(student.id, paperId, !isSaved).catch(e => console.error('[SUPABASE] Toggle paper error:', e));
+  }
+
   res.json({
     success: true,
     isSaved: !isSaved,
@@ -3090,6 +3304,11 @@ app.post('/api/student/bookmarks/toggle', requireAuth, (req, res) => {
   }
 
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    persistSavedPaperToggle(student.id, paperId, !isBookmarked).catch(e => console.error('[SUPABASE] Toggle bookmark error:', e));
+  }
+
   res.json({
     bookmarks: student.bookmarks,
     savedPapers: student.savedPapers,
@@ -3158,6 +3377,16 @@ app.post('/api/student/downloads/record', requireAuth, (req, res) => {
       }
 
       writeDb(db);
+
+      if (isSupabaseConfigured()) {
+        persistRecentDownload(student.id, isNote ? 'note' : 'paper', targetId).catch(e => console.error('[SUPABASE] Record download error:', e));
+        if (isNote && !alreadyArchived) {
+          persistSavedNoteToggle(student.id, targetId, true).catch(e => console.error('[SUPABASE] Auto-archive note error:', e));
+        } else if (!isNote && !alreadyArchived) {
+          persistSavedPaperToggle(student.id, targetId, true).catch(e => console.error('[SUPABASE] Auto-archive paper error:', e));
+        }
+      }
+
       return res.json({
         success: true,
         alreadyArchived,
@@ -3191,6 +3420,11 @@ app.post('/api/student/archive/notes/save', requireAuth, (req, res) => {
   }
 
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    persistSavedNoteToggle(student.id, noteId, true).catch(e => console.error('[SUPABASE] Save note archive error:', e));
+  }
+
   res.json({
     success: true,
     isSaved: true,
@@ -3212,6 +3446,11 @@ app.post('/api/student/archive/notes/remove', requireAuth, (req, res) => {
   }
 
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    persistSavedNoteToggle(student.id, noteId, false).catch(e => console.error('[SUPABASE] Remove note archive error:', e));
+  }
+
   res.json({
     success: true,
     isSaved: false,
@@ -3240,6 +3479,11 @@ app.post('/api/student/archive/notes/toggle', requireAuth, (req, res) => {
   }
 
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    persistSavedNoteToggle(student.id, noteId, !exists).catch(e => console.error('[SUPABASE] Toggle note archive error:', e));
+  }
+
   res.json({
     success: true,
     isSaved: !exists,
@@ -3347,6 +3591,10 @@ app.patch('/api/students/:id/status', requireAdmin, (req, res) => {
 
   writeDb(db);
 
+  if (isSupabaseConfigured()) {
+    persistStudentToSupabase(student).catch(e => console.error('[SUPABASE] Status update sync error:', e));
+  }
+
   const { passwordHash: _, salt: __, resetToken: ___, resetTokenExpires: ____, ...safeStudent } = student;
   res.json({
     success: true,
@@ -3382,6 +3630,10 @@ app.delete('/api/students/:id', requireAdmin, (req, res) => {
   // Remove student from database
   db.students.splice(idx, 1);
   writeDb(db);
+
+  if (isSupabaseConfigured()) {
+    getSupabase()?.from('students').delete().eq('id', req.params.id).then(() => {}, () => {});
+  }
 
   res.json({
     success: true,
@@ -3614,6 +3866,10 @@ Reply to: ${cleanEmail}
 
     db.contactMessages.unshift(contactRecord);
     writeDb(db);
+
+    if (isSupabaseConfigured()) {
+      persistContactMessage(contactRecord).catch(e => console.error('[SUPABASE] Contact message sync error:', e));
+    }
 
     if (deliveryStatus !== 'delivered') {
       return res.status(500).json({
