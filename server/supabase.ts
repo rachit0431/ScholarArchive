@@ -36,6 +36,26 @@ export function getSupabase(): SupabaseClient | null {
 // STORAGE HELPERS
 // ============================================================================
 
+let bucketVerified = false;
+
+async function ensureStorageBucketExists(sb: SupabaseClient): Promise<void> {
+  if (bucketVerified) return;
+  try {
+    const { data: buckets } = await sb.storage.listBuckets();
+    const exists = buckets?.some(b => b.id === SUPABASE_BUCKET || b.name === SUPABASE_BUCKET);
+    if (!exists) {
+      await sb.storage.createBucket(SUPABASE_BUCKET, {
+        public: true,
+        fileSizeLimit: 68157440,
+        allowedMimeTypes: ['application/pdf', 'application/x-pdf', 'application/octet-stream'],
+      });
+    }
+    bucketVerified = true;
+  } catch (err) {
+    // Non-blocking check
+  }
+}
+
 export async function uploadPdfToStorage(
   storagePath: string,
   fileBuffer: Buffer,
@@ -47,6 +67,8 @@ export async function uploadPdfToStorage(
   }
 
   try {
+    await ensureStorageBucketExists(sb);
+
     const { data, error } = await sb.storage
       .from(SUPABASE_BUCKET)
       .upload(storagePath, fileBuffer, {
@@ -351,56 +373,56 @@ export async function persistStudentToSupabase(student: any): Promise<void> {
 export async function persistPaperToSupabase(paper: any): Promise<void> {
   const sb = getSupabase();
   if (!sb) return;
-  try {
-    await sb.from('papers').upsert({
-      id: paper.id,
-      subject_name: paper.subjectName,
-      subject_code: paper.subjectCode,
-      exam_type: paper.examType,
-      academic_year: paper.academicYear,
-      btech_year: paper.btechYear,
-      semester: paper.semester,
-      paper_date: paper.paperDate,
-      description: paper.description,
-      max_marks: paper.maxMarks,
-      duration_minutes: paper.durationMinutes,
-      storage_path: paper.filename,
-      original_filename: paper.originalFilename,
-      file_size: paper.fileSize,
-      file_size_formatted: paper.fileSizeFormatted,
-      downloads_count: paper.downloadsCount || 0,
-      views_count: paper.viewsCount || 0,
-      uploaded_at: paper.uploadedAt,
-      uploaded_by: paper.uploadedBy,
-    });
-  } catch (e) {
-    console.error('[SUPABASE] Failed to persist paper:', e);
+  const { error } = await sb.from('papers').upsert({
+    id: paper.id,
+    subject_name: paper.subjectName,
+    subject_code: paper.subjectCode,
+    exam_type: paper.examType,
+    academic_year: paper.academicYear,
+    btech_year: paper.btechYear,
+    semester: paper.semester,
+    paper_date: paper.paperDate,
+    description: paper.description,
+    max_marks: paper.maxMarks,
+    duration_minutes: paper.durationMinutes,
+    storage_path: paper.filename,
+    original_filename: paper.originalFilename,
+    file_size: paper.fileSize,
+    file_size_formatted: paper.fileSizeFormatted,
+    downloads_count: paper.downloadsCount || 0,
+    views_count: paper.viewsCount || 0,
+    uploaded_at: paper.uploadedAt,
+    uploaded_by: paper.uploadedBy,
+  });
+  if (error) {
+    console.error('[SUPABASE] Failed to persist paper:', error.message);
+    throw new Error(error.message || 'Failed to persist paper metadata to Supabase.');
   }
 }
 
 export async function persistNoteToSupabase(note: any): Promise<void> {
   const sb = getSupabase();
   if (!sb) return;
-  try {
-    await sb.from('notes').upsert({
-      id: note.id,
-      title: note.title,
-      subject_name: note.subjectName,
-      subject_code: note.subjectCode,
-      btech_year: note.btechYear,
-      semester: note.semester,
-      description: note.description,
-      storage_path: note.filename,
-      original_filename: note.originalFilename,
-      file_size: note.fileSize,
-      file_size_formatted: note.fileSizeFormatted,
-      downloads_count: note.downloadsCount || 0,
-      views_count: note.viewsCount || 0,
-      uploaded_at: note.uploadedAt,
-      uploaded_by: note.uploadedBy,
-    });
-  } catch (e) {
-    console.error('[SUPABASE] Failed to persist note:', e);
+  const { error } = await sb.from('notes').upsert({
+    id: note.id,
+    title: note.title,
+    subject_name: note.subjectName,
+    subject_code: note.subjectCode,
+    btech_year: note.btechYear,
+    semester: note.semester,
+    description: note.description,
+    storage_path: note.filename,
+    original_filename: note.originalFilename,
+    file_size: note.fileSize,
+    file_size_formatted: note.fileSizeFormatted,
+    downloads_count: note.downloadsCount || 0,
+    views_count: note.viewsCount || 0,
+    uploaded_at: note.uploadedAt,
+    uploaded_by: note.uploadedBy,
+  });
+  if (error) {
+    console.error('[SUPABASE] Failed to persist note:', error.message);
+    throw new Error(error.message || 'Failed to persist note metadata to Supabase.');
   }
 }
 

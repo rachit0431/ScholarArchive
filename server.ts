@@ -1346,7 +1346,7 @@ app.post(
   '/api/papers',
   requireAuth,
   handleMulterUpload,
-  (req, res) => {
+  async (req, res) => {
     try {
       const db = readDb();
       const {
@@ -1450,13 +1450,18 @@ app.post(
 
       // Persist metadata and file to Supabase if configured
       if (isSupabaseConfigured() && req.file) {
-        fs.readFile(req.file.path, (_readErr, buf) => {
-          if (buf) {
-            uploadPdfToStorage(`papers/${newPaper.filename}`, buf)
-              .then(() => persistPaperToSupabase(newPaper))
-              .catch(e => console.error('[SUPABASE] Paper upload error:', e));
+        try {
+          const buf = await fs.promises.readFile(req.file.path);
+          const uploadResult = await uploadPdfToStorage(`papers/${newPaper.filename}`, buf);
+          if (!uploadResult.success) {
+            console.error('[SUPABASE] Paper storage upload error:', uploadResult.error);
+            return res.status(500).json({ error: uploadResult.error || 'Failed to upload paper PDF to Supabase Storage.' });
           }
-        });
+          await persistPaperToSupabase(newPaper);
+        } catch (readOrUploadErr: any) {
+          console.error('[SUPABASE] Paper upload error:', readOrUploadErr);
+          return res.status(500).json({ error: readOrUploadErr.message || 'Failed to persist paper to Supabase.' });
+        }
       }
 
       res.status(201).json(newPaper);
@@ -1503,7 +1508,7 @@ app.post(
 app.post(
   '/api/papers/complete-chunk-upload',
   requireAuth,
-  (req, res) => {
+  async (req, res) => {
     try {
       const {
         uploadId,
@@ -1580,13 +1585,18 @@ app.post(
       // Persist finalized chunked assembly to Supabase
       if (isSupabaseConfigured()) {
         const assembledFilePath = path.join(UPLOADS_DIR, newPaper.filename);
-        fs.readFile(assembledFilePath, (_readErr, buf) => {
-          if (buf) {
-            uploadPdfToStorage(`papers/${newPaper.filename}`, buf)
-              .then(() => persistPaperToSupabase(newPaper))
-              .catch(e => console.error('[SUPABASE] Chunked paper upload error:', e));
+        try {
+          const buf = await fs.promises.readFile(assembledFilePath);
+          const uploadResult = await uploadPdfToStorage(`papers/${newPaper.filename}`, buf);
+          if (!uploadResult.success) {
+            console.error('[SUPABASE] Chunked paper storage upload error:', uploadResult.error);
+            return res.status(500).json({ error: uploadResult.error || 'Failed to upload chunked paper PDF to Supabase Storage.' });
           }
-        });
+          await persistPaperToSupabase(newPaper);
+        } catch (readOrUploadErr: any) {
+          console.error('[SUPABASE] Chunked paper upload error:', readOrUploadErr);
+          return res.status(500).json({ error: readOrUploadErr.message || 'Failed to persist chunked paper to Supabase.' });
+        }
       }
 
       return res.status(201).json(newPaper);
@@ -1599,7 +1609,7 @@ app.post(
 );
 
 // --- 4. Edit Paper & Replace PDF ---
-app.put('/api/papers/:id', requireAdmin, handleMulterUpload, (req, res) => {
+app.put('/api/papers/:id', requireAdmin, handleMulterUpload, async (req, res) => {
   try {
     const db = readDb();
     const paperIdx = db.papers.findIndex(p => p.id === req.params.id);
@@ -1682,16 +1692,19 @@ app.put('/api/papers/:id', requireAdmin, handleMulterUpload, (req, res) => {
     writeDb(db);
 
     if (isSupabaseConfigured()) {
-      if (req.file) {
-        fs.readFile(req.file.path, (_readErr, buf) => {
-          if (buf) {
-            uploadPdfToStorage(`papers/${updatedPaper.filename}`, buf)
-              .then(() => persistPaperToSupabase(updatedPaper))
-              .catch(e => console.error('[SUPABASE] Paper update error:', e));
+      try {
+        if (req.file) {
+          const buf = await fs.promises.readFile(req.file.path);
+          const uploadResult = await uploadPdfToStorage(`papers/${updatedPaper.filename}`, buf);
+          if (!uploadResult.success) {
+            console.error('[SUPABASE] Paper update storage upload error:', uploadResult.error);
+            return res.status(500).json({ error: uploadResult.error || 'Failed to upload updated paper PDF to Supabase Storage.' });
           }
-        });
-      } else {
-        persistPaperToSupabase(updatedPaper).catch(e => console.error('[SUPABASE] Paper update error:', e));
+        }
+        await persistPaperToSupabase(updatedPaper);
+      } catch (readOrUploadErr: any) {
+        console.error('[SUPABASE] Paper update error:', readOrUploadErr);
+        return res.status(500).json({ error: readOrUploadErr.message || 'Failed to update paper in Supabase.' });
       }
     }
 
@@ -2024,7 +2037,7 @@ app.post(
   '/api/notes',
   requireAdmin,
   handleMulterUpload,
-  (req, res) => {
+  async (req, res) => {
     try {
       const db = readDb();
       if (!db.notes) db.notes = [];
@@ -2098,13 +2111,18 @@ app.post(
       writeDb(db);
 
       if (isSupabaseConfigured() && req.file) {
-        fs.readFile(req.file.path, (_readErr, buf) => {
-          if (buf) {
-            uploadPdfToStorage(`notes/${newNote.filename}`, buf)
-              .then(() => persistNoteToSupabase(newNote))
-              .catch(e => console.error('[SUPABASE] Note direct upload error:', e));
+        try {
+          const buf = await fs.promises.readFile(req.file.path);
+          const uploadResult = await uploadPdfToStorage(`notes/${newNote.filename}`, buf);
+          if (!uploadResult.success) {
+            console.error('[SUPABASE] Note direct storage upload error:', uploadResult.error);
+            return res.status(500).json({ error: uploadResult.error || 'Failed to upload note PDF to Supabase Storage.' });
           }
-        });
+          await persistNoteToSupabase(newNote);
+        } catch (readOrUploadErr: any) {
+          console.error('[SUPABASE] Note direct upload error:', readOrUploadErr);
+          return res.status(500).json({ error: readOrUploadErr.message || 'Failed to persist note to Supabase.' });
+        }
       }
 
       res.status(201).json(newNote);
@@ -2151,7 +2169,7 @@ app.post(
 app.post(
   '/api/notes/complete-chunk-upload',
   requireAdmin,
-  (req, res) => {
+  async (req, res) => {
     try {
       const {
         uploadId,
@@ -2200,13 +2218,18 @@ app.post(
 
       if (isSupabaseConfigured()) {
         const assembledFilePath = path.join(UPLOADS_DIR, newNote.filename);
-        fs.readFile(assembledFilePath, (_readErr, buf) => {
-          if (buf) {
-            uploadPdfToStorage(`notes/${newNote.filename}`, buf)
-              .then(() => persistNoteToSupabase(newNote))
-              .catch(e => console.error('[SUPABASE] Note chunked commit upload error:', e));
+        try {
+          const buf = await fs.promises.readFile(assembledFilePath);
+          const uploadResult = await uploadPdfToStorage(`notes/${newNote.filename}`, buf);
+          if (!uploadResult.success) {
+            console.error('[SUPABASE] Note chunked storage upload error:', uploadResult.error);
+            return res.status(500).json({ error: uploadResult.error || 'Failed to upload chunked note PDF to Supabase Storage.' });
           }
-        });
+          await persistNoteToSupabase(newNote);
+        } catch (readOrUploadErr: any) {
+          console.error('[SUPABASE] Note chunked commit upload error:', readOrUploadErr);
+          return res.status(500).json({ error: readOrUploadErr.message || 'Failed to persist chunked note to Supabase.' });
+        }
       }
 
       return res.status(201).json(newNote);
