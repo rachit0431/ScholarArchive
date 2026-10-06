@@ -794,7 +794,7 @@ export const AuthPortalPage: React.FC<AuthPortalPageProps> = ({
 
         {/* Security Footnote */}
         <p className="text-center text-[11px] text-[#5C6F68] mt-6">
-          Athenaeum University Autonomous Examination Wing · Authorized Personnel Only · All access events are audited.
+          ScholarArchive University Autonomous Examination Wing · Authorized Personnel Only · All access events are audited.
         </p>
       </div>
     </div>

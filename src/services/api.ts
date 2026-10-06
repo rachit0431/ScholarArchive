@@ -1,6 +1,6 @@
 import { Paper, Note, Subject, StudentUser, AdminUser, SystemStats, SavedPaperEntry, SavedNoteEntry, ArchiveResponse } from '../types';
 
-const TOKEN_KEY = 'athenaeum_session_token';
+const TOKEN_KEY = 'scholararchive_session_token';
 
 export const tokenStorage = {
   getToken(): string | null {
@@ -1062,7 +1062,7 @@ export const api = {
     return res.json();
   },
 
-  async recordDownload(id: string, type: 'paper' | 'note' = 'paper'): Promise<{ success: boolean; savedPapers?: SavedPaperEntry[]; savedNotes?: SavedNoteEntry[]; bookmarks?: string[]; recentDownloads?: any[] }> {
+  async recordDownload(id: string, type: 'paper' | 'note' = 'paper'): Promise<{ success: boolean; alreadyArchived?: boolean; savedPapers?: SavedPaperEntry[]; savedNotes?: SavedNoteEntry[]; bookmarks?: string[]; recentDownloads?: any[] }> {
     const res = await authFetch('/api/student/downloads/record', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

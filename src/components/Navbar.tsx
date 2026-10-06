@@ -52,13 +52,13 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <img
               src={ASSETS.collegeEmblem}
-              alt="Athenaeum Crest"
+              alt="ScholarArchive Crest"
               className="w-9 h-9 object-cover rounded-md border border-[#E5DFD5] shadow-xs"
               referrerPolicy="no-referrer"
             />
             <div>
               <span className="text-xl sm:text-2xl font-serif-academic font-bold tracking-tight text-[#0F5132] block leading-none">
-                Athenaeum
+                ScholarArchive
               </span>
               <span className="text-[10px] tracking-widest text-[#5C6F68] uppercase font-medium">
                 Examination Archives & Question Bank

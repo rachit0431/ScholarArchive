@@ -1,5 +1,5 @@
 -- ============================================================================
--- SCHOLARARCHIVE / ATHENAEUM - SUPABASE DATABASE MIGRATION SCRIPT
+-- SCHOLARARCHIVE - SUPABASE DATABASE MIGRATION SCRIPT
 -- ============================================================================
 -- This script provisions the complete relational schema, indexes, RLS policies,
 -- storage bucket configuration, and initial admin seeds for ScholarArchive.

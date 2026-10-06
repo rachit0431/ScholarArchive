@@ -35,7 +35,7 @@ export const SOCIAL_CONFIG: SocialConfig = {
 
   institutionalDesk: {
     office: 'Office of the Controller of Examinations',
-    division: 'Athenaeum Student Support & Academic Repository',
+    division: 'ScholarArchive Student Support & Academic Repository',
     institution: 'Autonomous Engineering Institution',
     workingHours: 'Monday – Friday: 9:00 AM – 5:00 PM IST',
     responseTime: 'Responses are typically dispatched within 24 institutional hours',

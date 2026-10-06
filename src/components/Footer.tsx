@@ -128,7 +128,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigateToContact }) => {
             <div className="flex items-center gap-2 text-[#0F5132]">
               <Archive className="w-5 h-5" />
               <span className="text-lg font-serif-academic font-bold tracking-tight text-[#0F5132]">
-                Athenaeum Digital Question-Paper Archive
+                ScholarArchive Digital Question-Paper Archive
               </span>
             </div>
             <p className="text-xs leading-relaxed max-w-md text-[#5C6F68]">
@@ -174,7 +174,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigateToContact }) => {
 
         {/* Footer Bottom Bar */}
         <div className="border-t border-[#E5DFD5] pt-6 flex flex-col sm:flex-row items-center justify-between text-xs text-[#5C6F68] gap-4">
-          <p>© {new Date().getFullYear()} Athenaeum Institute of Higher Technology. All rights reserved.</p>
+          <p>© {new Date().getFullYear()} ScholarArchive Institute of Higher Technology. All rights reserved.</p>
           <div className="flex items-center gap-4 text-xs">
             {onNavigateToContact ? (
               <button

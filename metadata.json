@@ -1,5 +1,5 @@
 {
-  "name": "Athenaeum - College Previous Year Papers Archive",
+  "name": "ScholarArchive - College Previous Year Papers Archive",
   "description": "A classic academic digital question-paper archive and management system for college students and faculty.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
