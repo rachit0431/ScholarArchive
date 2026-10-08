@@ -23,6 +23,7 @@ import {
   persistRecentDownload,
   persistContactMessage,
   persistEventToSupabase,
+  type EventItem,
 } from './server/supabase.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -649,21 +650,6 @@ interface ContactMessage {
   previewUrl?: string;
   senderRole?: 'student' | 'admin' | 'public';
   studentId?: string;
-}
-
-interface EventItem {
-  id: string;
-  title: string;
-  date: string;
-  time: string;
-  location: string;
-  category: string;
-  description: string;
-  organizer: string;
-  imageUrl?: string;
-  imageFilename?: string;
-  createdAt: string;
-  updatedAt: string;
 }
 
 interface DatabaseSchema {

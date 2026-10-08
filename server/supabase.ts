@@ -47,7 +47,7 @@ async function ensureStorageBucketExists(sb: SupabaseClient): Promise<void> {
       await sb.storage.createBucket(SUPABASE_BUCKET, {
         public: true,
         fileSizeLimit: 68157440,
-        allowedMimeTypes: ['application/pdf', 'application/x-pdf', 'application/octet-stream'],
+        allowedMimeTypes: ['application/pdf', 'application/x-pdf', 'application/octet-stream', 'image/jpeg', 'image/png', 'image/webp', 'image/gif'],
       });
     }
     bucketVerified = true;
@@ -140,17 +140,37 @@ export async function deletePdfFromStorage(
 // DATABASE SYNCHRONIZATION & MUTATION HELPERS
 // ============================================================================
 
-export async function syncDatabaseFromSupabase(): Promise<{
+export interface EventItem {
+  id: string;
+  title: string;
+  date: string;
+  time: string;
+  location: string;
+  category: string;
+  description: string;
+  organizer: string;
+  imageUrl?: string;
+  imageFilename?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SyncedEventRecord = EventItem;
+
+export interface SyncedDatabaseState {
   students?: any[];
   admins?: any[];
   papers?: any[];
   notes?: any[];
+  events?: EventItem[];
   subjects?: any[];
   years?: string[];
   examTypes?: string[];
   sessions?: Record<string, any>;
   contactMessages?: any[];
-} | null> {
+}
+
+export async function syncDatabaseFromSupabase(): Promise<SyncedDatabaseState | null> {
   const sb = getSupabase();
   if (!sb) return null;
 
@@ -165,6 +185,7 @@ export async function syncDatabaseFromSupabase(): Promise<{
       adminsRes,
       papersRes,
       notesRes,
+      eventsRes,
       subjectsRes,
       settingsRes,
       sessionsRes,
@@ -177,6 +198,7 @@ export async function syncDatabaseFromSupabase(): Promise<{
       sb.from('admins').select('*'),
       sb.from('papers').select('*').order('uploaded_at', { ascending: false }),
       sb.from('notes').select('*').order('uploaded_at', { ascending: false }),
+      sb.from('events').select('*').order('date', { ascending: false }),
       sb.from('subjects').select('*'),
       sb.from('system_settings').select('*'),
       sb.from('sessions').select('*'),
@@ -270,6 +292,21 @@ export async function syncDatabaseFromSupabase(): Promise<{
       uploadedBy: n.uploaded_by,
     }));
 
+    const events: EventItem[] = (eventsRes.data || []).map(e => ({
+      id: e.id,
+      title: e.title,
+      date: e.date,
+      time: e.time,
+      location: e.location,
+      category: e.category,
+      description: e.description,
+      organizer: e.organizer,
+      imageUrl: e.image_url || undefined,
+      imageFilename: e.image_filename || undefined,
+      createdAt: e.created_at,
+      updatedAt: e.updated_at,
+    }));
+
     const admins = (adminsRes.data || []).map(a => ({
       id: a.id,
       name: a.name,
@@ -334,6 +371,7 @@ export async function syncDatabaseFromSupabase(): Promise<{
       admins: admins.length > 0 ? admins : undefined,
       papers,
       notes,
+      events: events.length > 0 ? events : undefined,
       subjects: subjects.length > 0 ? subjects : undefined,
       years,
       examTypes,
@@ -343,6 +381,32 @@ export async function syncDatabaseFromSupabase(): Promise<{
   } catch (err: any) {
     console.error('[SUPABASE] Sync error:', err);
     return null;
+  }
+}
+
+export async function persistEventToSupabase(eventItem: EventItem): Promise<void> {
+  const sb = getSupabase();
+  if (!sb) return;
+  try {
+    const { error } = await sb.from('events').upsert({
+      id: eventItem.id,
+      title: eventItem.title,
+      date: eventItem.date,
+      time: eventItem.time,
+      location: eventItem.location,
+      category: eventItem.category,
+      description: eventItem.description,
+      organizer: eventItem.organizer,
+      image_url: eventItem.imageUrl || null,
+      image_filename: eventItem.imageFilename || null,
+      created_at: eventItem.createdAt || new Date().toISOString(),
+      updated_at: eventItem.updatedAt || new Date().toISOString(),
+    });
+    if (error) {
+      console.error('[SUPABASE] Failed to persist event:', error.message);
+    }
+  } catch (e) {
+    console.error('[SUPABASE] Failed to persist event:', e);
   }
 }
 
