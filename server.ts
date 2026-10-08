@@ -3681,8 +3681,12 @@ function createGmailTransporter(): {
   }
 
   const host = process.env.SMTP_HOST || 'smtp.gmail.com';
-  const port = process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : 465;
-  const secure = process.env.SMTP_SECURE !== undefined ? process.env.SMTP_SECURE === 'true' : port === 465;
+
+const port = process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : 587;
+
+const secure = process.env.SMTP_SECURE !== undefined
+  ? process.env.SMTP_SECURE === 'true'
+  : false;
 
   const transporter = nodemailer.createTransport({
     host,
