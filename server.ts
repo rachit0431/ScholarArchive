@@ -5,7 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import crypto from 'crypto';
-import nodemailer, { type Transporter } from 'nodemailer';
+import { Resend } from 'resend';
 import {
   isSupabaseConfigured,
   getSupabase,
@@ -22,6 +22,7 @@ import {
   persistSavedNoteToggle,
   persistRecentDownload,
   persistContactMessage,
+  persistEventToSupabase,
 } from './server/supabase.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -45,6 +46,7 @@ app.use((err: any, _req: express.Request, res: express.Response, next: express.N
 // Directories
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+const EVENT_IMAGES_DIR = path.join(DATA_DIR, 'event-images');
 const TEMP_UPLOADS_DIR = path.join(DATA_DIR, 'temp-uploads');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
@@ -53,6 +55,9 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+if (!fs.existsSync(EVENT_IMAGES_DIR)) {
+  fs.mkdirSync(EVENT_IMAGES_DIR, { recursive: true });
 }
 if (!fs.existsSync(TEMP_UPLOADS_DIR)) {
   fs.mkdirSync(TEMP_UPLOADS_DIR, { recursive: true });
@@ -126,6 +131,60 @@ const handleMulterUpload = (req: express.Request, res: express.Response, next: e
     if (req.files) {
       const filesMap = req.files as { [fieldname: string]: Express.Multer.File[] };
       req.file = filesMap['pdfFile']?.[0] || filesMap['file']?.[0];
+    }
+    next();
+  });
+};
+
+// Multer Storage Configuration for Event Photos / Images
+const eventImageStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, EVENT_IMAGES_DIR);
+  },
+  filename: (_req, file, cb) => {
+    const timestamp = Date.now();
+    const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+    cb(null, `event-${timestamp}-${sanitizedName}`);
+  },
+});
+
+const eventImageUpload = multer({
+  storage: eventImageStorage,
+  limits: {
+    fileSize: 15 * 1024 * 1024, // 15 MB limit for event photos
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowedExt = /\.(jpg|jpeg|png|webp|gif)$/i.test(file.originalname || '');
+    const allowedMime = /^image\/(jpeg|png|webp|gif|jpg)$/i.test(file.mimetype || '');
+    if (allowedExt || allowedMime) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid image format. Only JPG, PNG, WEBP, and GIF images are supported.'));
+    }
+  },
+});
+
+const eventImageUploadFields = eventImageUpload.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'photo', maxCount: 1 },
+  { name: 'eventPhoto', maxCount: 1 },
+]);
+
+const handleEventImageUpload = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  eventImageUploadFields(req, res, (err: any) => {
+    if (err) {
+      console.error('Event image upload error:', err);
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(413).json({ error: 'Event image size exceeds the 15 MB limit.' });
+        }
+        return res.status(400).json({ error: `Image upload error: ${err.message}` });
+      }
+      return res.status(400).json({ error: err.message || 'Error processing uploaded event photo.' });
+    }
+    if (req.files) {
+      const filesMap = req.files as { [fieldname: string]: Express.Multer.File[] };
+      req.file = filesMap['image']?.[0] || filesMap['photo']?.[0] || filesMap['eventPhoto']?.[0];
     }
     next();
   });
@@ -592,9 +651,25 @@ interface ContactMessage {
   studentId?: string;
 }
 
+interface EventItem {
+  id: string;
+  title: string;
+  date: string;
+  time: string;
+  location: string;
+  category: string;
+  description: string;
+  organizer: string;
+  imageUrl?: string;
+  imageFilename?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface DatabaseSchema {
   papers: Paper[];
   notes?: Note[];
+  events?: EventItem[];
   subjects: Subject[];
   years: string[];
   examTypes: string[];
@@ -812,9 +887,49 @@ function getInitialData(): DatabaseSchema {
 
   const notes: Note[] = [];
 
+  const events: EventItem[] = [
+    {
+      id: 'evt-1',
+      title: 'Annual B.Tech Research Symposium & Technical Colloquium 2026',
+      date: '2026-04-18',
+      time: '09:30 AM - 04:30 PM',
+      location: 'Main Convocation Auditorium, Academic Block A',
+      category: 'Academic Symposium',
+      description: 'An institutional showcase of final-year undergraduate B.Tech dissertations, peer-reviewed engineering papers, and keynote addresses by visiting faculty and industry pioneers.',
+      organizer: 'Office of Academic Research & Dean of Engineering',
+      createdAt: '2026-03-01T10:00:00.000Z',
+      updatedAt: '2026-03-01T10:00:00.000Z',
+    },
+    {
+      id: 'evt-2',
+      title: 'Pre-Examination Preparatory Workshop: Data Structures & Computer Networks',
+      date: '2026-04-25',
+      time: '02:00 PM - 05:00 PM',
+      location: 'Central Library Seminar Hall II',
+      category: 'Examination Prep',
+      description: 'Guided faculty review session analyzing past 5 years of University End-Semester question papers, marking scheme rubrics, and high-weightage algorithmic problem sets.',
+      organizer: 'Department of Computer Science & Engineering',
+      createdAt: '2026-03-05T10:00:00.000Z',
+      updatedAt: '2026-03-05T10:00:00.000Z',
+    },
+    {
+      id: 'evt-3',
+      title: 'Autonomous Examination Board Briefing & Archival Digitization Drive',
+      date: '2026-05-04',
+      time: '11:00 AM - 01:00 PM',
+      location: 'Conference Room 104, Examination Wing',
+      category: 'Institutional Seminar',
+      description: 'Orientation on newly digitized examination folios, academic integrity guidelines for Spring 2026 End-Semester examinations, and student archive utilization.',
+      organizer: 'Office of the Controller of Examinations',
+      createdAt: '2026-03-10T10:00:00.000Z',
+      updatedAt: '2026-03-10T10:00:00.000Z',
+    },
+  ];
+
   return {
     papers,
     notes,
+    events,
     subjects,
     years,
     examTypes,
@@ -860,6 +975,12 @@ function readDb(): DatabaseSchema {
     // Ensure notes array exists
     if (!data.notes || !Array.isArray(data.notes)) {
       data.notes = [];
+      needsWrite = true;
+    }
+
+    // Ensure events array exists with default institutional events if absent
+    if (!data.events || !Array.isArray(data.events)) {
+      data.events = getInitialData().events || [];
       needsWrite = true;
     }
 
@@ -1151,6 +1272,7 @@ if (isSupabaseConfigured()) {
       if (cloudData.students && cloudData.students.length > 0) current.students = cloudData.students;
       if (cloudData.papers && cloudData.papers.length > 0) current.papers = cloudData.papers;
       if (cloudData.notes && cloudData.notes.length > 0) current.notes = cloudData.notes;
+      if (cloudData.events && cloudData.events.length > 0) current.events = cloudData.events;
       if (cloudData.subjects && cloudData.subjects.length > 0) current.subjects = cloudData.subjects;
       if (cloudData.sessions) current.sessions = { ...current.sessions, ...cloudData.sessions };
       writeDb(current);
@@ -1160,6 +1282,42 @@ if (isSupabaseConfigured()) {
     console.warn('[SUPABASE] Initial cloud sync notice:', err?.message || err);
   });
 }
+
+// Serve uploaded event photos publicly so they display cleanly on the Events page
+app.get('/api/event-images/:filename', async (req, res) => {
+  const safeName = path.basename(req.params.filename || '');
+  if (!safeName) {
+    return res.status(400).json({ error: 'Invalid image filename.' });
+  }
+  const localPath = path.join(EVENT_IMAGES_DIR, safeName);
+
+  if (!fs.existsSync(localPath) && isSupabaseConfigured()) {
+    try {
+      const { buffer } = await downloadPdfFromStorage(`events/${safeName}`);
+      if (buffer && buffer.length > 0) {
+        fs.writeFileSync(localPath, buffer);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!fs.existsSync(localPath)) {
+    return res.status(404).json({ error: 'Event image not found.' });
+  }
+
+  const ext = path.extname(safeName).toLowerCase();
+  const mimeMap: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+  };
+  res.setHeader('Content-Type', mimeMap[ext] || 'image/jpeg');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  return res.sendFile(localPath);
+});
 
 // Explicitly block direct public access to uploads folder - all files must go through authenticated endpoints
 app.all(['/uploads', '/uploads/*'], (_req, res) => {
@@ -3664,54 +3822,21 @@ app.delete('/api/students/:id', requireAdmin, (req, res) => {
   });
 });
 
-// --- 16. Institutional Contact & Direct Email Dispatching ---
+// --- 16. Institutional Contact & Direct Email Dispatching (via Resend HTTPS API) ---
 const TARGET_CONTACT_EMAIL = process.env.CONTACT_RECIPIENT_EMAIL || 'rqchit2009@gmail.com';
+const RESEND_SENDER_ADDRESS = process.env.RESEND_FROM_EMAIL || 'ScholarArchive <onboarding@resend.dev>';
 
-function createGmailTransporter(): {
-  transporter: Transporter;
-  fromAddress: string;
-} {
-  const user = process.env.GMAIL_USER || process.env.SMTP_USER;
-  const pass = (process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS || '').replace(/\s+/g, '');
-
-  if (!user || !pass) {
+function createResendClient(): Resend {
+  const apiKey = (process.env.RESEND_API_KEY || '').trim();
+  if (!apiKey) {
     throw new Error(
-      'Gmail SMTP credentials are not configured. Please set GMAIL_USER and GMAIL_APP_PASSWORD (16-character Google App Password) in your server environment variables or .env file.'
+      'RESEND_API_KEY is not configured in server environment variables.'
     );
   }
-
-  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
-
-const port = process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : 587;
-
-const secure = process.env.SMTP_SECURE !== undefined
-  ? process.env.SMTP_SECURE === 'true'
-  : false;
-
-  const transporter = nodemailer.createTransport({
-    host,
-    port,
-    secure,
-    auth: {
-      user,
-      pass,
-    },
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
-  });
-
-  const fromAddress =
-    process.env.EMAIL_FROM ||
-    `"ScholarArchive Digital Archive" <${user}>`;
-
-  return {
-    transporter,
-    fromAddress,
-  };
+  return new Resend(apiKey);
 }
 
-// Contact form submission endpoint (Sends directly to rqchit2009@gmail.com)
+// Contact form submission endpoint (Saves record & dispatches email notification via Resend HTTPS API)
 app.post('/api/contact', async (req, res) => {
   try {
     const { name, email, subject, message } = req.body;
@@ -3850,27 +3975,32 @@ Reply to: ${cleanEmail}
     let deliveryError: string | undefined = undefined;
 
     try {
-      const { transporter, fromAddress } = createGmailTransporter();
-      const mailOptions = {
-        from: fromAddress,
-        to: TARGET_CONTACT_EMAIL,
-        replyTo: `"${cleanName}" <${cleanEmail}>`,
+      const resend = createResendClient();
+      const { data, error } = await resend.emails.send({
+        from: RESEND_SENDER_ADDRESS,
+        to: [TARGET_CONTACT_EMAIL],
+        replyTo: cleanEmail,
         subject: `[ScholarArchive Contact] ${cleanSubject}`,
         text: emailText,
         html: emailHtml,
-      };
+      });
 
-      const info = await transporter.sendMail(mailOptions);
-      messageId = info.messageId;
-      deliveryStatus = 'delivered';
-      console.log(`[Contact Service] Message delivered successfully to ${TARGET_CONTACT_EMAIL} via Gmail SMTP. MessageId: ${messageId}`);
+      if (error) {
+        deliveryStatus = 'failed';
+        deliveryError = error.message || 'Resend API returned an error';
+        console.error('[Contact Service] Resend API email delivery error:', error);
+      } else {
+        messageId = data?.id;
+        deliveryStatus = 'delivered';
+        console.log(`[Contact Service] Message delivered successfully to ${TARGET_CONTACT_EMAIL} via Resend API. MessageId: ${messageId}`);
+      }
     } catch (mailErr: any) {
       deliveryStatus = 'failed';
-      deliveryError = mailErr?.message || 'SMTP transmission error';
-      console.error('[Contact Service] Gmail SMTP delivery failed:', deliveryError);
+      deliveryError = mailErr?.message || 'Resend HTTPS API transmission error';
+      console.error('[Contact Service] Resend email delivery exception:', mailErr);
     }
 
-    // Persist to database so message is permanently recorded in institutional records
+    // Persist to database so message is permanently recorded in institutional records even if email fails
     const db = readDb();
     if (!db.contactMessages) {
       db.contactMessages = [];
@@ -3899,15 +4029,17 @@ Reply to: ${cleanEmail}
     }
 
     if (deliveryStatus !== 'delivered') {
-      return res.status(500).json({
-        success: false,
-        error: `Email delivery failed: ${deliveryError}. Your message has been saved in the administrative records, but could not be transmitted to ${TARGET_CONTACT_EMAIL}.`,
+      return res.status(200).json({
+        success: true,
+        emailDelivered: false,
+        message: 'Your query has been saved in ScholarArchive institutional records, though the instant email notification could not be dispatched at this moment. Our academic desk will review your submission.',
         id: contactRecord.id,
       });
     }
 
     return res.status(200).json({
       success: true,
+      emailDelivered: true,
       message: `Your message has been delivered directly to ${TARGET_CONTACT_EMAIL}. Our academic desk will get back to you shortly.`,
       messageId,
       id: contactRecord.id,
